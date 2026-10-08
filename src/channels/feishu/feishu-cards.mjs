@@ -27,12 +27,17 @@ function plainText(content) {
   return { tag: 'plain_text', content: String(content) };
 }
 
-function markdown(content) {
+export function markdown(content) {
   return { tag: 'lark_md', content: String(content) };
 }
 
-/** Full-width button wrapped in a column_set. */
-function button(content, actionValue) {
+/**
+ * Full-width button wrapped in a column_set.
+ * `actionValue` is either the action name alone or a full callback value
+ * object when the button also has to carry addressing (a record key, say).
+ */
+export function button(content, actionValue) {
+  const value = typeof actionValue === 'string' ? { action: actionValue } : actionValue;
   return {
     tag: 'column_set',
     flex_mode: 'none',
@@ -45,7 +50,7 @@ function button(content, actionValue) {
         text: plainText(content),
         type: 'default',
         width: 'fill',
-        behaviors: [{ type: 'callback', value: { action: actionValue } }],
+        behaviors: [{ type: 'callback', value }],
       }],
     }],
   };

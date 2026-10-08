@@ -114,6 +114,16 @@ import {
   workspaceListCard,
   stepStatusText,
 } from './feishu-cards.mjs';
+import {
+  PROSE_ACTION,
+  PROSE_ASK_ACTION,
+  PROSE_QUESTION_FIELD,
+  PROSE_REGEN_ACTION,
+  proseActionRow,
+  proseCard,
+  proseFailureCard,
+  prosePendingCard,
+} from './prose-bridge.mjs';
 import { t } from '../shared/i18n.mjs';
 import { MAX_WATCHES_PER_KEY } from './state-store.mjs';
 import {
@@ -681,6 +691,16 @@ export class FeishuHarnessBridge {
    * concurrent topics of one group chat never share a voice slot.
    */
   #voiceTurns = new Map();
+  /**
+   * 结构化表述提供者（软依赖）；prose 插件缺席时为 null。
+   * 只通过 available() 判在场，prose 后挂/卸载都能实时反映。
+   */
+  #prose = null;
+  /**
+   * 已投递的结构化表述卡片：记录键（助手消息 id）→ { chatId, cardMessageId }。
+   * 追问据此把结果写回同一张卡；卡片动作值里也带同一个键，重启后仍可寻址。
+   */
+  #proseCards = new Map();
   #appId;
   #botOpenId;
   #groupResponseMode;
@@ -773,6 +793,7 @@ export class FeishuHarnessBridge {
     sessionSyncTargetsFor = null,
     logger = console,
     voice = null,
+    prose = null,
     signal,
   }) {
     if (!client || !harness || !state || !status) {
@@ -825,6 +846,8 @@ export class FeishuHarnessBridge {
     this.#stepCardPanels = normalizeFeishuStepCardPanels(stepCardPanels);
     this.#stepPushClock = stepPushClock ?? DEFAULT_STEP_PUSH_CLOCK;
     this.#voice = voice ?? null;
+    // 结构化表述（软依赖）：null 时答案卡不挂按钮、回调分支整体不生效。
+    this.#prose = prose ?? null;
     this.#repair = repair ?? null;
     this.#repairPollIntervalMs = repairPollIntervalMs;
     this.#repairLinkWaitMs = repairLinkWaitMs;
@@ -2349,6 +2372,78 @@ export class FeishuHarnessBridge {
   }
 
   /**
+   * 结构化表述：生成 / 追问 / 重新生成。
+   *
+   * 唯一的事实来源是 prose 服务：这里只做「取会话 → 调服务 → 写卡片」，
+   * 不复制它的任何业务规则。卡片先落占位态再回填，读者点下去立刻有反馈。
+   * prose 插件缺席时整个方法不被调用（可用性在入口判过）。
+   * @param input.action - 三个动作值之一
+   * @param input.chatId - 回帖目标会话
+   * @param input.key - 会话键，用来取绑定的 Harness 会话
+   * @param input.messageId - 触发回调的卡片消息（回帖锚点）
+   * @param input.proseKey - 记录键（助手消息 id）；答案卡入口没有，由 prose 定位
+   * @param input.question - 追问内容（仅 PROSE_ASK_ACTION）
+   */
+  async #handleProseAction({ action, chatId, key, messageId, proseKey, question }) {
+    const sessionId = this.#state.sessionFor(key);
+    if (!sessionId) {
+      await this.#send(
+        chatId,
+        t('当前对话还没有绑定 Harness 会话，先发一条消息再试。'),
+        { replyTo: messageId },
+      ).catch(() => undefined);
+      return;
+    }
+    if (action === PROSE_ASK_ACTION) {
+      if (!proseKey || !question) return;
+      const cached = this.#proseCards.get(proseKey) ?? null;
+      // 追问期间保留已有问答，只把提交键切成进行中——整卡换成占位会让读者丢失上下文。
+      if (cached) {
+        await this.#patchCardMessage(chatId, cached.cardMessageId, proseCard(cached.record, proseKey, { busy: true }));
+      }
+      await this.#runProse({
+        chatId, key, sessionId, question, proseKey, replyTo: messageId,
+        cardMessageId: cached?.cardMessageId ?? null,
+      });
+      return;
+    }
+    // 生成与重新生成同路：重新生成沿用同一个记录键，prose 会保留已有问答。
+    await this.#runProse({
+      chatId, key, sessionId, question: '', proseKey: proseKey ?? null, cardMessageId: null, replyTo: messageId,
+    });
+  }
+
+  /**
+   * 跑一次 prose 调用并把它写回卡片。
+   * @param input.question - 非空表示追问，空表示生成/重新生成
+   * @param input.cardMessageId - 已有结果卡；为空时新发一张占位卡
+   */
+  async #runProse({ chatId, key, sessionId, question, proseKey, cardMessageId, replyTo }) {
+    let cardId = cardMessageId;
+    if (cardId) {
+      await this.#patchCardMessage(chatId, cardId, prosePendingCard());
+    } else {
+      try {
+        // key 必须带上：卡片的回调路由靠它反查会话，缺了按钮点了没反应。
+        cardId = await this.#sendCard(chatId, prosePendingCard(), { replyTo, key });
+      } catch (error) {
+        this.#logger.warn?.('[dsh-feishu] unable to open the prose card:', error?.message ?? String(error));
+        return;
+      }
+    }
+    const result = question === ''
+      ? await this.#prose.generate({ sessionId })
+      : await this.#prose.ask({ sessionId, messageId: proseKey, question });
+    if (!result.ok) {
+      await this.#patchCardMessage(chatId, cardId, proseFailureCard(result.message));
+      return;
+    }
+    const recordKey = nonEmptyString(result.record?.messageId) ?? proseKey;
+    this.#proseCards.set(recordKey, { chatId, cardMessageId: cardId, record: result.record });
+    await this.#patchCardMessage(chatId, cardId, proseCard(result.record, recordKey));
+  }
+
+  /**
    * Card button callback (card.action.trigger). The operator must be an
    * allowed sender: group members outside the allowlist must never drive
    * session binding, workspace switches or other card actions.
@@ -2448,6 +2543,11 @@ export class FeishuHarnessBridge {
     const entry = { ...route, messageId, selections: multiValues, operatorOpenId, newSessionActionId };
     const source = nonEmptyString(actionValue.source);
     const formText = nonEmptyString(formValue.steer_text);
+    // 结构化表述卡片带自己的寻址键与追问文本：动作值里的 proseKey 指向记录，
+    // 输入框读 form_value——两者都必须进 dedupe 身份，否则连问两个不同问题
+    // 会被当成同一个动作吞掉。
+    const proseKey = nonEmptyString(actionValue.proseKey);
+    const proseQuestion = nonEmptyString(formValue[PROSE_QUESTION_FIELD]);
     const eventId = nonEmptyString(event?.event_id)
       ?? nonEmptyString(event?.header?.event_id)
       ?? nonEmptyString(event?.uuid)
@@ -2460,6 +2560,8 @@ export class FeishuHarnessBridge {
       multiValues,
       source,
       formText,
+      proseKey,
+      proseQuestion,
     });
     const isStop = resolvedAction === 'stop';
     const rawSteer = resolvedAction.startsWith('steer:')
@@ -2655,6 +2757,8 @@ export class FeishuHarnessBridge {
     sessionPage = 0,
     sessionLimit = null,
     selections = [],
+    proseKey = null,
+    proseQuestion = null,
     actor = null,
     menuContext = null,
     newSessionActionId = null,
@@ -2727,6 +2831,21 @@ export class FeishuHarnessBridge {
         } else {
           await reply(INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         }
+      }
+      return;
+    }
+    // 结构化表述：生成 / 追问 / 重新生成。prose 缺席时入口直接返回，
+    // 卡片上的按钮本就不会出现（答案卡只在可用时才追加动作行）。
+    if (action === PROSE_ACTION || action === PROSE_ASK_ACTION || action === PROSE_REGEN_ACTION) {
+      if (typeof this.#prose?.available === 'function' && this.#prose.available()) {
+        await this.#handleProseAction({
+          action,
+          chatId,
+          key,
+          messageId,
+          proseKey,
+          question: proseQuestion,
+        });
       }
       return;
     }
@@ -5897,6 +6016,10 @@ export class FeishuHarnessBridge {
         },
       }, {
         replyTo: messageId,
+        // 结构化表述入口挂在答案卡尾部；prose 插件缺席时整行不追加。
+        ...(typeof this.#prose?.available === 'function' && this.#prose.available()
+          ? { footerElements: proseActionRow() }
+          : {}),
         ...(this.#replyInThreadFor(messageId)
           ? { replyInThread: true, onReplyThreadId: async (threadId) => this.#registerTopicReply(messageId, chatId, threadId) }
           : {}),
@@ -5997,6 +6120,11 @@ export class FeishuHarnessBridge {
       }
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
       return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
+    }
+    // 答案卡上的「结构化表述」按钮要能回调回来：卡片由 channel 直接投递、
+    // 不经过 #sendCard，这里补登记回调路由（回调靠它反查会话与作用域）。
+    for (const cardMessageId of providerMessageIdsFor(stream)) {
+      this.#rememberCardRoute(cardMessageId, chatId, { key });
     }
     const delivery = await this.#deliverArtifacts(
       chatId,

@@ -13513,3 +13513,109 @@ for (const scenario of ['final rewrite', 'shrink and regrow', 'unchanged draft']
     assert.deepEqual(fx.text, []);
   });
 }
+
+test('the structured-expression action fills one card with the prose result', async () => {
+  const sent = [];
+  const patches = [];
+  const proseCalls = [];
+  const seen = new Set();
+  const sessions = new Map([['p2p:ou_user', 'session-prose']]);
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: async (request) => {
+          sent.push({
+            type: request.data.msg_type,
+            content: request.data.msg_type === 'interactive' ? JSON.parse(request.data.content) : null,
+          });
+          return { code: 0, data: { message_id: `om_card_${sent.length}` } };
+        },
+        reply: async (request) => {
+          sent.push({
+            type: request.data.msg_type,
+            content: request.data.msg_type === 'interactive' ? JSON.parse(request.data.content) : null,
+          });
+          return { code: 0, data: { message_id: `om_card_${sent.length}` } };
+        },
+        patch: async (request) => { patches.push(request); return { code: 0 }; },
+      } } },
+    },
+    harness: { ensureRunning: async () => true },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, sessionId) => sessions.set(key, sessionId),
+      clearSession: async (key) => sessions.delete(key),
+    },
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    prose: {
+      available: () => true,
+      generate: async ({ sessionId }) => {
+        proseCalls.push(sessionId);
+        return {
+          ok: true,
+          record: {
+            messageId: 'msg-prose',
+            text: '## 结论\n\n一句话说清楚。',
+            model: 'moonton/deepseek-v4',
+            effort: 'high',
+            turns: [],
+          },
+        };
+      },
+      ask: async () => ({ ok: false, message: 'unused' }),
+    },
+  });
+
+  // 菜单卡自带会话路由，卡片回调从这里进入——答案卡的路由由投递后补登记。
+  await bridge.accept(event('om_cmd', '/m'));
+  await eventually(() => sent.length > 0, 'the menu card was not created');
+  const cardMessageId = `om_card_${sent.length}`;
+
+  await bridge.onCardAction(cardActionEvent(cardMessageId, 'prose', 'ou_user'));
+  await eventually(() => patches.length > 0, 'the structured-expression card was never filled');
+
+  assert.deepEqual(proseCalls, ['session-prose']);
+  // 先送占位卡给出即时反馈，再把终稿写回同一张卡。
+  assert.equal(sent.length, 2);
+  assert.match(collectVisibleCardText(sent[1].content), /正在结构化/);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].path.message_id, 'om_card_2');
+  const filled = JSON.parse(patches[0].data.content);
+  assert.match(collectVisibleCardText(filled), /一句话说清楚。/);
+  assert.match(collectVisibleCardText(filled), /moonton\/deepseek-v4/);
+});
+
+test('a structured-expression action without prose installed stays silent', async () => {
+  const sent = [];
+  const seen = new Set();
+  const sessions = new Map([['p2p:ou_user', 'session-prose']]);
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: async (request) => {
+          sent.push({ msgType: request.data.msg_type });
+          return { code: 0, data: { message_id: `om_card_${sent.length}` } };
+        },
+      } } },
+    },
+    harness: { ensureRunning: async () => true },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, sessionId) => sessions.set(key, sessionId),
+      clearSession: async (key) => sessions.delete(key),
+    },
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_cmd', '/m'));
+  await eventually(() => sent.length > 0, 'the menu card was not created');
+  const cardMessageId = `om_card_${sent.length}`;
+  await bridge.onCardAction(cardActionEvent(cardMessageId, 'prose', 'ou_user'));
+  assert.equal(sent.length, 1, 'a stale button must not produce any delivery');
+});

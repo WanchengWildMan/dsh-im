@@ -412,4 +412,21 @@ export default {
   // feishu/bridge.mjs — thinking status heartbeat
   '⏳ 正在思考中…（已运行 {elapsed}）': '⏳ Thinking… (elapsed {elapsed})',
   '⏳ 正在思考中…': '⏳ Thinking…',
+  // feishu/prose-bridge.mjs + bridge.mjs — structured-expression cards
+  '✨ 结构化表述': '✨ Structured',
+  '结构化表述': 'Structured expression',
+  '由 {model} 改写 · 档位 {effort}': 'Rewritten by {model} · effort {effort}',
+  '由 {model} 改写': 'Rewritten by {model}',
+  '⏳ 正在结构化这条回答…': '⏳ Restructuring this answer…',
+  '正在生成结构化表述': 'Generating the structured version',
+  '⚠️ 生成失败：{reason}': '⚠️ Generation failed: {reason}',
+  '结构化表述生成失败': 'Structured expression failed',
+  '（未产出内容）': '(no output)',
+  '…（内容过长，已截断）': '… (truncated: content too long)',
+  '继续追问这条表述…': 'Ask a follow-up about this version…',
+  '追问': 'Ask',
+  '追问中…': 'Asking…',
+  '🔄 重新生成': '🔄 Regenerate',
+  '当前对话还没有绑定 Harness 会话，先发一条消息再试。':
+    'This conversation is not bound to a Harness session yet. Send a message first.',
 };

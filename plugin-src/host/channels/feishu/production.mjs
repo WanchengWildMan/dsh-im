@@ -32,6 +32,7 @@ import { prepareBotWorkspace } from '../../../../src/channels/shared/default-wor
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
 import { listModelCatalog } from '../../../../src/channels/shared/model-setting.mjs';
 import { createDeliveryAdapter } from '../../delivery-adapter.mjs';
+import { createProseProvider } from './prose-provider.mjs';
 import {
   accessPolicyProvider,
   initialAccessPolicyFor,
@@ -220,6 +221,9 @@ export async function createProductionController(ctx, config = {}, internals = {
   const wsAgent = createFeishuWebSocketAgent(proxyEnv, internals.createProxyAgent);
 
   const modelCatalog = (options) => listModelCatalog(harness, options);
+  // 结构化表述：软依赖 prose 插件，未安装时该能力整体静默禁用。
+  const makeProseProvider = internals.createProseProvider ?? createProseProvider;
+  const proseProvider = makeProseProvider(ctx);
   const coreController = new Controller({
     logger,
     registerApp: (options) => lark.registerApp(options),
@@ -266,6 +270,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         ownerOpenIds: botConfig.ownerOpenIds ?? [botConfig.ownerOpenId],
         harness: workspaceScope.harness,
         state: workspaceScope.state,
+        prose: proseProvider,
         contextEnhancement: { botId: id, getSettings: () => workspaces.contextEnhancementFor(id) },
         accessPolicy: accessPolicyProvider(workspaces, id, {
           channel: 'feishu', config: botConfig,

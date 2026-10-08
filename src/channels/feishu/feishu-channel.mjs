@@ -213,6 +213,9 @@ export class VerifiedFeishuChannel {
       throw new Error('Feishu stream requires a markdown producer');
     }
 
+    // 终稿后追加到卡片尾部的组件（如「结构化表述」动作行）。这里只当作待追加
+    // 的卡片 JSON 处理，不关心它们是什么能力——调用方决定是否给、给什么。
+    const footer = Array.isArray(options.footerElements) ? options.footerElements : [];
     const cards = [];
     let activeCard = null;
     let rotating = false;
@@ -328,6 +331,10 @@ export class VerifiedFeishuChannel {
           if (index > 0) cards.push(card);
           await this.#updateStreamCard(card, chunk);
           await this.#finishStreamCard(card);
+          // 动作行只挂最后一张卡：超长答案会被拆成多张，入口重复没有意义。
+          if (index === chunks.length - 1 && footer.length > 0) {
+            await this.#appendElements(card, footer);
+          }
         }
       });
       return {
@@ -585,6 +592,34 @@ export class VerifiedFeishuChannel {
       },
     });
     assertApiSuccess('Feishu card.settings', response);
+  }
+
+  /**
+   * 往卡片实体末尾追加组件。
+   *
+   * 追加失败只记日志、不抛出：动作行缺失不该让已经写好答案的卡片投递失败。
+   * sequence 与卡片的其它写操作共用同一计数器，必须严格递增。
+   * @param card - #createStreamCard 返回的卡片状态
+   * @param elements - 卡片 JSON 2.0 组件数组
+   * @returns 是否追加成功
+   */
+  async #appendElements(card, elements) {
+    try {
+      const response = await this.#client.cardkit.v1.cardElement.create({
+        path: { card_id: card.cardId },
+        data: {
+          type: 'append',
+          elements: JSON.stringify(elements),
+          sequence: ++card.sequence,
+          uuid: `append_${card.cardId}_${card.sequence}`,
+        },
+      });
+      assertApiSuccess('Feishu cardElement.create', response);
+      return true;
+    } catch (error) {
+      console.warn('[dsh-feishu] unable to append card elements:', error?.message ?? String(error));
+      return false;
+    }
   }
 
   async #sendCard(chatId, cardId, options = {}) {

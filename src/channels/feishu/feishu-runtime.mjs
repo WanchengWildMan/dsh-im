@@ -125,6 +125,7 @@ export class FeishuRuntime {
   #ownerOpenIds;
   #harness;
   #state;
+  #prose = null;
   #contextEnhancement;
   #accessPolicy;
   #replyTimeoutMs;
@@ -179,6 +180,7 @@ export class FeishuRuntime {
     ownerOpenIds,
     harness,
     state,
+    prose = null,
     contextEnhancement,
     accessPolicy,
     repair,
@@ -228,6 +230,8 @@ export class FeishuRuntime {
     this.#ownerOpenIds = normalizedOwners;
     this.#harness = harness;
     this.#state = state;
+    // 结构化表述提供者（软依赖）：null 表示 prose 插件未安装，能力整体禁用。
+    this.#prose = prose;
     this.#contextEnhancement = contextEnhancement;
     this.#accessPolicy = accessPolicy;
     this.#repair = repair ?? null;
@@ -368,6 +372,7 @@ export class FeishuRuntime {
         channel,
         harness: this.#harness,
         state: this.#state,
+        prose: this.#prose,
         contextEnhancement: this.#contextEnhancement,
         accessPolicy: this.#accessPolicy,
         status: this.#status,
