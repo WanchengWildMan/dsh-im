@@ -1008,6 +1008,25 @@ test('issue #163: 非前缀匹配的工具行原样写入新卡（回归锚）',
   assert.equal(newCardWrites.at(-1).data.content, '_正在使用 read_file…_');
 });
 
+test('issue #163: 带正文的过程快照同样剥离冻结前缀，不把旧卡正文重放到新卡', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('过程 A');
+      await controller.rotate();
+      controller.interactionPresented();
+      // 换卡后先来一条「正文 + 临时活动行」的过程快照，再来终稿。
+      await controller.setContent('过程 A\n\n_正在使用 read_file…_', { transient: true });
+      await controller.setContent('过程 A\n\n最终回答 B');
+    },
+  });
+  const newCardWrites = calls.updates
+    .filter((u) => u.path.card_id === 'card-test-2')
+    .map((u) => u.data.content);
+  assert.deepEqual(newCardWrites, ['\n\n_正在使用 read_file…_', '\n\n最终回答 B']);
+});
+
 test('issue #163: 两轮提问链式去重：第二轮冻结基线为第一轮累计快照', async () => {
   const { client, calls } = fakeClient();
   const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });

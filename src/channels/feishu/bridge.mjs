@@ -242,6 +242,17 @@ const STEP_STREAM_PANEL_MAX_BYTES = 12_000;
 /** One thinking note is excerpted to this many characters inside its panel. */
 const STEP_STREAM_NOTE_MAX_CHARS = 500;
 
+/** 原生流式卡的正文 = 最新正文快照 + 最新活动行（工具/状态）。活动行只能追加
+ *  到正文末尾，绝不能整段顶替正文：原生卡只有一个 markdown 元素，写卡即整块
+ *  替换，裸写一条进展快照会把用户已经读到的回答从卡上抹掉。 */
+function streamCardBody(answerText, activityText) {
+  const answer = String(answerText ?? '').trim();
+  const activity = String(activityText ?? '').trim();
+  if (!answer) return activity;
+  if (!activity) return answer;
+  return `${answer}\n\n${activity}`;
+}
+
 /** Split one markdown answer into post-sized chunks at paragraph bounds,
  *  budgeted by the encoded rich-text content rather than the source string.
  *  This accounts for both CJK bytes and JSON escape expansion. */
@@ -5969,6 +5980,10 @@ export class FeishuHarnessBridge {
         markdown: async (controller) => {
           promptStarted = true;
           const baseAskOptions = this.#interactionAskOptions(event, key, message.files, message.images);
+          // 正文快照与活动行分开留存：正文来自累积的 text 更新，活动行来自
+          // 工具/状态更新，两者合成一次写卡内容（见 streamCardBody）。
+          let streamedAnswer = '';
+          let streamedActivity = '';
           const askOptions = {
             ...baseAskOptions,
             // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
@@ -5987,9 +6002,17 @@ export class FeishuHarnessBridge {
               }
             },
             onUpdate: async (update) => {
-              await controller.setContent(this.#progressText(update), {
-                transient: update.type !== 'text',
-              });
+              // 正文更新单独写入，同时作为冻结前缀去重的基线；过程更新只作为
+              // 正文末尾的临时活动行追加，正文快照因此不会在工具调用时从卡上
+              // 消失（原生卡写卡即整块替换）。
+              const answerUpdate = update.type === 'text' && Boolean(update.text);
+              if (answerUpdate) streamedAnswer = update.text;
+              else streamedActivity = this.#progressText(update);
+              const body = answerUpdate
+                ? streamedAnswer
+                : streamCardBody(streamedAnswer, streamedActivity);
+              if (!body) return;
+              await controller.setContent(body, { transient: !answerUpdate });
               this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
             },
           };

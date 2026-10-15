@@ -839,6 +839,54 @@ test('bridge maps a Feishu conversation to a persistent Harness session and repl
   assert.equal(status.messagesRejected, 1);
 });
 
+test('a tool call never erases the answer already streamed into the native card', async () => {
+  const writes = [];
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: {},
+    channel: {
+      addReaction: async () => 'reaction',
+      removeReaction: async () => undefined,
+      stream: async (_chatId, input) => {
+        await input.markdown({
+          setContent: async (content, options = {}) => {
+            writes.push({ content, transient: options.transient === true });
+          },
+        });
+        return { messageId: 'om_stream' };
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onUpdate({ type: 'text', text: '第一步：先看目录。' });
+        await options.onUpdate({ type: 'tool', name: 'bash' });
+        await options.onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'bash' });
+        await options.onUpdate({ type: 'text', text: '第一步：先看目录。\n\n第二步：目录里有 a.md。' });
+        await options.onUpdate({ type: 'tool', name: 'read' });
+        return '最终答案：读完了。';
+      },
+    },
+    state: stateFixture([['p2p:ou_user', 'session-stream-card']]).state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_stream_card', '看一下目录'));
+
+  // 每一次过程写入都必须带上已流出的正文：原生流式卡只有一个 markdown 元素，
+  // 用「最新进展」整段替换会让工具调用吞掉用户已经读到的回答。
+  assert.deepEqual(writes, [
+    { content: '第一步：先看目录。', transient: false },
+    { content: '第一步：先看目录。\n\n_正在使用 bash…_', transient: true },
+    { content: '第一步：先看目录。\n\n_正在整理结果…_', transient: true },
+    { content: '第一步：先看目录。\n\n第二步：目录里有 a.md。', transient: false },
+    { content: '第一步：先看目录。\n\n第二步：目录里有 a.md。\n\n_正在使用 read…_', transient: true },
+    { content: '最终答案：读完了。', transient: false },
+  ]);
+  assert.equal(status.streamResponses, 1);
+});
+
 test('mention response mode ignores unaddressed groups and only accepts this bot mention', async () => {
   const fixture = stateFixture([['group:oc_group_mentions', 'session-group-mentions']]);
   const asked = [];

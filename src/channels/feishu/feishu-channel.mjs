@@ -302,7 +302,10 @@ export class VerifiedFeishuChannel {
           // Retain the latest snapshot even if it is a replay or a held write.
           lastContent = next;
           lastContentIsTransient = transient;
-          const visible = transient ? next : applyFrozenDedup(next);
+          // 冻结前缀去重对每一次写卡生效，过程快照同样如此——带正文的过程
+          // 快照不得把旧卡已展示的正文重放到新卡上。`transient` 只决定这次
+          // 写入是否推进冻结基线：过程行不能充当后续增量的前缀。
+          const visible = applyFrozenDedup(next);
           if (visible === '') return; // 重放快照不建卡不写卡
           if (awaitingPresentation) return; // 换卡挂起：视图已推进，仅挂起卡片写入
           const card = await ensureActiveCard();
