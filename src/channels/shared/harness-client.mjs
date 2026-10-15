@@ -283,13 +283,22 @@ function workspaceEntries(value) {
   ));
 }
 
-function workspaceFromList(workspacePath, workspaceList) {
+async function workspaceFromList(workspacePath, workspaceList) {
   if (!Array.isArray(workspaceList?.items)
     || !Array.isArray(workspaceList?.archivedSessionIds)) {
     throw new Error('Harness returned an invalid response for workspace.list');
   }
 
-  const workspace = workspaceList.items.find((item) => item?.path === workspacePath);
+  // 宿主返回的 path 与调用方保存的写法可能不同（尾斜杠、符号链接、未规范化），
+  // 必须按规范化后的真实路径比较：严格字符串相等一旦不匹配，就会走成
+  // 「该工作区没有会话」，表现为每个工作区都空。
+  let workspace = null;
+  for (const item of workspaceList.items) {
+    if (item?.path === workspacePath || await sameWorkspacePath(item?.path, workspacePath)) {
+      workspace = item;
+      break;
+    }
+  }
   if (!workspace) return null;
   if (!Array.isArray(workspace.sessionIds)
     || workspace.sessionIds.some((sessionId) => typeof sessionId !== 'string')) {
@@ -1167,7 +1176,7 @@ export class HarnessClient {
   async listWorkspaceSessions(workspacePath, options = {}) {
     await this.ensureRunning(options);
     const workspaceList = await this.rpc('workspace.list', {}, 30_000, options);
-    const workspace = workspaceFromList(workspacePath, workspaceList);
+    const workspace = await workspaceFromList(workspacePath, workspaceList);
     if (await this.isUngroupedWorkspace(workspacePath)) {
       const sessionList = await this.rpc('session.list', {}, 30_000, options);
       if (!Array.isArray(sessionList?.items)) {
@@ -1322,7 +1331,16 @@ export class HarnessClient {
   async workspaceId(options = {}) {
     const { workspace = this.#workspace, ...rpcOptions } = options;
     const { items } = await this.rpc('workspace.list', {}, 30_000, rpcOptions);
-    const existing = items.find((item) => item.path === workspace);
+    // 与 workspaceFromList 同一口径：宿主注册的路径写法可能与调用方不同
+    // （尾斜杠、符号链接、未规范化），严格字符串相等会漏配同一目录并重复
+    // 创建工作区分组。
+    let existing = null;
+    for (const item of items) {
+      if (item?.path === workspace || await sameWorkspacePath(item?.path, workspace)) {
+        existing = item;
+        break;
+      }
+    }
     if (existing) return existing.workspaceId;
     const created = await this.rpc('workspace.create', { path: workspace }, 30_000, rpcOptions);
     return created.workspace.workspaceId;

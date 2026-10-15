@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- 飞书原生流式卡的过程更新不再整段替换卡片正文：工具调用与状态更新只作为正文末尾的临时活动行追加，用户已经读到的回答不会在工具调用时从卡上消失；换卡定格后的过程快照同样剥离冻结前缀，不把旧卡已展示的正文重放到新卡上。
+  Feishu native streaming cards no longer replace the whole card body on a process update. Tool and status updates append a transient activity line after the answer already streamed, so a tool call never erases the reply the user has already read. Process snapshots after a card rotation also strip the frozen prefix instead of replaying the superseded card's text.
+- 工作区路径改为按规范化后的真实路径比较，修复宿主注册路径与机器人保存写法不一致（尾斜杠、符号链接）时列表为空、绑定失败、以及重复创建同一目录工作区分组的问题；由此 dsh-claude 等外部 Agent Preset 创建的会话可以正常列出并绑定续聊。
+  Workspace paths are now compared after normalization, fixing empty session lists, failed bindings, and duplicate workspace groups when the Host's registered path and the bot's saved path differ (trailing slash, symlink). Sessions created by external Agent Presets such as dsh-claude can now be listed and bound for continued conversation.
+
 ## [4.39.0] - 2026-10-13
 
 本版本的 Matrix 会话上下文与群聊追问能力来自 [@Dong09](https://github.com/Dong09) 的贡献（[#350](https://github.com/xmanrui/dsh-im/pull/350)），感谢！

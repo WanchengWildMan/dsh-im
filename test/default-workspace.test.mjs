@@ -415,3 +415,53 @@ test('binding an old default session from a custom workspace restores cwd before
   assert.equal(state.sessionFor('direct:chat'), 'existing');
   assert.deepEqual(restored, ['existing']);
 });
+
+test('a workspace reached through a symlink still lists its sessions', async (t) => {
+  const { root, workspace, client } = await fixture(t);
+  const alias = join(root, 'alias-list');
+  if (!await symlinkOrSkip(t, workspace, alias, 'dir')) return;
+  client.rpc = async (method) => {
+    if (method === 'workspace.list') {
+      // 宿主返回真实路径；调用方保存/传入的是指向同一目录的符号链接路径。
+      return { items: [{ workspaceId: 'im', path: workspace, sessionIds: ['grouped'] }], archivedSessionIds: [] };
+    }
+    return { items: [{ sessionId: 'grouped', cwd: workspace }] };
+  };
+  const listed = await client.listWorkspaceSessions(alias);
+  // 修前：workspaceFromList 用严格字符串相等，匹配不到 → 返回空会话列表。
+  assert.deepEqual(listed.sessions.map(item => item.sessionId), ['grouped']);
+});
+
+test('a workspace path written with a trailing slash still lists its sessions', async (t) => {
+  const { workspace, client } = await fixture(t);
+  client.rpc = async (method) => {
+    if (method === 'workspace.list') {
+      // 宿主返回规范化路径；调用方传入的是带尾斜杠的同一目录。
+      return { items: [{ workspaceId: 'im', path: workspace, sessionIds: ['grouped'] }], archivedSessionIds: [] };
+    }
+    return { items: [{ sessionId: 'grouped', cwd: workspace }] };
+  };
+  const listed = await client.listWorkspaceSessions(`${workspace}/`);
+  assert.deepEqual(listed.sessions.map(item => item.sessionId), ['grouped']);
+});
+
+test('a workspace written with a trailing slash reuses its registration instead of duplicating it', async (t) => {
+  const { root, client } = await fixture(t);
+  const project = join(root, 'project');
+  await mkdir(project);
+  const calls = [];
+  client.rpc = async (method, payload) => {
+    calls.push({ method, payload });
+    if (method === 'workspace.list') {
+      return { items: [{ workspaceId: 'project', path: project, sessionIds: [] }], archivedSessionIds: [] };
+    }
+    assert.equal(method, 'session.create');
+    return { sessionId: 'session-1' };
+  };
+  await client.createSession({ workspace: `${project}/` });
+  // 修前：workspaceId 用严格字符串相等，漏配后走 workspace.create 重复注册同一目录。
+  assert.deepEqual(calls, [
+    { method: 'workspace.list', payload: {} },
+    { method: 'session.create', payload: { workspaceId: 'project' } },
+  ]);
+});
